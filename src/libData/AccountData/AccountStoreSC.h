@@ -23,6 +23,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <ScillaVM/JITD.h>
 
 #include "AccountStoreBase.h"
 #include "libUtils/DetachedFunction.h"
@@ -93,6 +94,9 @@ class AccountStoreSC : public AccountStoreBase<MAP> {
 
   /// scilla IPC server
   std::shared_ptr<ScillaIPCServer> m_scillaIPCServer;
+
+  /// ScillaVM compiled code cache
+  std::unique_ptr<ScillaVM::ScillaCacheManager> m_scillaCodeCache;
 
   /// A set of contract account address pending for storageroot updating
   std::set<Address> m_storageRootUpdateBuffer;
@@ -213,7 +217,8 @@ class AccountStoreSC : public AccountStoreBase<MAP> {
   /// expose in protected for using by data migration
   bool ParseContractCheckerOutput(const std::string& checkerPrint,
                                   TransactionReceipt& receipt,
-                                  bytes& map_depth_data, uint64_t& gasRemained,
+                                  std::string& llvm_ir, bytes& map_depth_data,
+                                  uint64_t& gasRemained,
                                   bool is_library = false);
 
   /// external interface for processing txn

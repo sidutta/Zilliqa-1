@@ -16,8 +16,11 @@
  */
 #include <chrono>
 
+#include <ScillaVM/Errors.h>
+#include <ScillaVM/JITD.h>
 #include <boost/filesystem.hpp>
 #include <chrono>
+#include <functional>
 
 #include "libPersistence/ContractStorage2.h"
 #include "libServer/ScillaIPCServer.h"
@@ -26,6 +29,41 @@
 #include "libUtils/SafeMath.h"
 #include "libUtils/SysCommand.h"
 
+// TODO: Define in constants.xml
+#define SCILLAVM_CACHE_DIR "/tmp"
+
+namespace {
+using namespace ScillaVM;
+ScillaParams buildScillaParams(Address toAddr) {
+  // https://stackoverflow.com/questions/4364599/c-overloaded-method-pointer
+  auto fetchPtr = (bool (Contract::ContractStorage2::*)(
+                      const dev::h160& addr,
+                      const ScillaVM::ScillaParams::StateQuery& query,
+                      boost::any& dst, bool& foundVal)) &
+                  Contract::ContractStorage2::FetchStateValue;
+  auto updatePtr = (bool (Contract::ContractStorage2::*)(
+                       const dev::h160& addr,
+                       const ScillaVM::ScillaParams::StateQuery& query,
+                       const boost::any& value)) &
+                   Contract::ContractStorage2::UpdateStateValue;
+  using namespace ScillaVM;
+  namespace ph = std::placeholders;
+  // Bind the methods to pass as callbacks to the VM.
+  ScillaParams::FetchState_Type fetchStateValue =
+      std::bind(fetchPtr, &Contract::ContractStorage2::GetContractStorage(),
+                toAddr, ph::_1, ph::_2, ph::_3);
+  ScillaParams::UpdateState_Type updateStateValue =
+      std::bind(updatePtr, &Contract::ContractStorage2::GetContractStorage(),
+                toAddr, ph::_1, ph::_2);
+  ScillaParams SP(fetchStateValue, updateStateValue);
+  return SP;
+}
+
+// Not thread-safe.
+ScillaCacheManager SCM;
+
+}  // namespace
+
 // 5mb
 const unsigned int MAX_SCILLA_OUTPUT_SIZE_IN_BYTES = 5120;
 
@@ -33,6 +71,8 @@ template <class MAP>
 AccountStoreSC<MAP>::AccountStoreSC() {
   m_accountStoreAtomic = std::make_unique<AccountStoreAtomic<MAP>>(*this);
   m_txnProcessTimeout = false;
+  m_scillaCodeCache =
+      std::make_unique<ScillaVM::ScillaCacheManager>(SCILLAVM_CACHE_DIR);
 }
 
 template <class MAP>
@@ -277,10 +317,11 @@ bool AccountStoreSC<MAP>::UpdateAccounts(const uint64_t& blockNum,
       }
 
       bytes map_depth_data;
+      std::string llvm_ir;
 
-      if (ret_checker &&
-          !ParseContractCheckerOutput(checkerPrint, receipt, map_depth_data,
-                                      gasRemained, is_library)) {
+      if (ret_checker && !ParseContractCheckerOutput(checkerPrint, receipt,
+                                                     llvm_ir, map_depth_data,
+                                                     gasRemained, is_library)) {
         ret_checker = false;
       }
 
@@ -366,6 +407,20 @@ bool AccountStoreSC<MAP>::UpdateAccounts(const uint64_t& blockNum,
           } catch (const std::exception& e) {
             LOG_GENERAL(WARNING,
                         "Exception caught in create account (2): " << e.what());
+            ret = false;
+          }
+
+          // Create contract using ScillaVM. At the moment, this JIT compiles
+          // llvm_ir to machine code and puts it in the cache. Later on, the
+          // call to scilla-runner above can be removed.
+          try {
+            auto SP = buildScillaParams(toAddr);
+            auto sJIT =
+                ScillaVM::ScillaJIT::create(SP, llvm_ir, toAddr.hex(), &SCM);
+            // TODO: Use this JIT object to deploy.
+          } catch (const ScillaVM::ScillaError& se) {
+            LOG_GENERAL(WARNING,
+                        "ScillaVM create contract failed: " << se.toString());
             ret = false;
           }
         }
@@ -512,19 +567,6 @@ bool AccountStoreSC<MAP>::UpdateAccounts(const uint64_t& blockNum,
         return false;
       }
 
-      std::map<Address, std::pair<std::string, std::string>> extlibs_exports;
-      if (!PopulateExtlibsExports(scilla_version, extlibs, extlibs_exports)) {
-        LOG_GENERAL(WARNING, "PopulateExtLibsExports failed");
-        return false;
-      }
-
-      m_curBlockNum = blockNum;
-      if (!ExportCallContractFiles(*toAccount, transaction, scilla_version,
-                                   extlibs_exports)) {
-        LOG_GENERAL(WARNING, "ExportCallContractFiles failed");
-        return false;
-      }
-
       DiscardTransferAtomic();
 
       if (!this->DecreaseBalance(fromAddr, gasDeposit)) {
@@ -548,53 +590,45 @@ bool AccountStoreSC<MAP>::UpdateAccounts(const uint64_t& blockNum,
 
       std::string runnerPrint;
       bool ret = true;
-      int pid = -1;
+      Contract::ContractStorage2::GetContractStorage().BufferCurrentState();
 
-      auto func = [this, &runnerPrint, &ret, &pid, gasRemained, &receipt,
-                   &toAddr, &extlibs_exports]() mutable -> void {
+      try {
+        auto SP = buildScillaParams(toAddr);
+        auto llvm_ir = "";  // Assuming that the machine code is already cached.
+        auto sJIT =
+            ScillaVM::ScillaJIT::create(SP, llvm_ir, toAddr.hex(), &SCM);
+        Json::Value msgObj;
         try {
-          if (!SysCommand::ExecuteCmd(
-                  SysCommand::WITH_OUTPUT_PID,
-                  GetCallContractCmdStr(m_root_w_version, gasRemained,
-                                        this->GetBalance(toAddr)),
-                  runnerPrint, pid)) {
-            LOG_GENERAL(WARNING, "ExecuteCmd failed: " << GetCallContractCmdStr(
-                                     m_root_w_version, gasRemained,
-                                     this->GetBalance(toAddr)));
-            receipt.AddError(EXECUTE_CMD_FAILED);
-            ret = false;
+          // Message Json
+          std::string dataStr(transaction.GetData().begin(),
+                              transaction.GetData().end());
+          if (!JSONUtils::GetInstance().convertStrtoJson(dataStr, msgObj)) {
+            throw std::runtime_error("Error parsing data to message JSON");
           }
+          std::string prepend = "0x";
+          msgObj["_sender"] = prepend + Account::GetAddressFromPublicKey(
+                                            transaction.GetSenderPubKey())
+                                            .hex();
+          msgObj["_amount"] = transaction.GetAmount().convert_to<std::string>();
         } catch (const std::exception& e) {
-          LOG_GENERAL(WARNING,
-                      "Exception caught in call account (1): " << e.what());
+          LOG_GENERAL(WARNING, "Exception caught: " << e.what());
           ret = false;
         }
-        cv_callContract.notify_all();
-      };
-
-      Contract::ContractStorage2::GetContractStorage().BufferCurrentState();
-      DetachedFunction(1, func);
-
-      {
-        std::unique_lock<std::mutex> lk(m_MutexCVCallContract);
-        cv_callContract.wait(lk);
-      }
-
-      if (m_txnProcessTimeout) {
-        LOG_GENERAL(
-            WARNING,
-            "Txn processing timeout! Interrupt current contract call, pid: "
-                << pid);
-        try {
-          if (pid >= 0) {
-            kill(pid, SIGKILL);
-          }
-        } catch (const std::exception& e) {
-          LOG_GENERAL(WARNING, "Exception caught in kill pid: " << e.what());
-        }
-        receipt.AddError(EXECUTE_CMD_TIMEOUT);
+        sJIT->execMsg(msgObj);
+        // Let's just print a return JSON. TODO: VM should return these values.
+        Json::Value vmout;
+        vmout["scilla_major_version"] = "0";
+        vmout["gas_remaining"] = std::to_string(gasRemained);
+        vmout["_accepted"] = "false";
+        vmout["messages"] = Json::arrayValue;
+        vmout["events"] = Json::arrayValue;
+        runnerPrint = vmout.toStyledString();
+      } catch (const ScillaVM::ScillaError& se) {
+        LOG_GENERAL(WARNING,
+                    "ScillaVM create contract failed: " << se.toString());
         ret = false;
       }
+
       if (ENABLE_CHECK_PERFORMANCE_LOG) {
         LOG_GENERAL(DEBUG, "Executed root transition in "
                                << r_timer_end(tpStart) << " microseconds");
@@ -1023,7 +1057,8 @@ std::string AccountStoreSC<MAP>::GetCallContractCmdStr(
 template <class MAP>
 bool AccountStoreSC<MAP>::ParseContractCheckerOutput(
     const std::string& checkerPrint, TransactionReceipt& receipt,
-    bytes& map_depth_data, uint64_t& gasRemained, bool is_library) {
+    std::string& llvm_ir, bytes& map_depth_data, uint64_t& gasRemained,
+    bool is_library) {
   LOG_MARKER();
 
   LOG_GENERAL(
@@ -1087,6 +1122,12 @@ bool AccountStoreSC<MAP>::ParseContractCheckerOutput(
 
       map_depth_data = DataConversion::StringToCharArray(
           JSONUtils::GetInstance().convertJsontoStr(map_depth_json));
+
+      if (!root.isMember("llvm_ir")) {
+        receipt.AddError(CHECKER_FAILED);
+        return false;
+      }
+      llvm_ir = root["llvm_ir"].asString();
     }
   } catch (const std::exception& e) {
     LOG_GENERAL(WARNING, "Exception caught: " << e.what() << " checkerPrint: "

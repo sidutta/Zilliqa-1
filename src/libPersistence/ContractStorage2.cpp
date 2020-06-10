@@ -145,7 +145,8 @@ string ContractStorage2::RemoveAddrFromKey(const std::string& key) {
 
 bool ContractStorage2::FetchStateValue(const dev::h160& addr, const bytes& src,
                                        unsigned int s_offset, bytes& dst,
-                                       unsigned int d_offset, bool& foundVal) {
+                                       unsigned int d_offset, bool& foundVal,
+                                       bool getType, string& type) {
   if (LOG_SC) {
     LOG_MARKER();
   }
@@ -176,9 +177,24 @@ bool ContractStorage2::FetchStateValue(const dev::h160& addr, const bytes& src,
   }
 
   if (query.name() == FIELDS_MAP_DEPTH_INDICATOR ||
-      query.name() == CONTRACT_ADDR_INDICATOR) {
+      query.name() == CONTRACT_ADDR_INDICATOR ||
+      query.name() == SCILLA_VERSION_INDICATOR ||
+      query.name() == MAP_DEPTH_INDICATOR || query.name() == TYPE_INDICATOR) {
     LOG_GENERAL(WARNING, "invalid query: " << query.name());
     return false;
+  }
+
+  if (getType) {
+    std::map<std::string, bytes> t_type;
+    std::string type_key =
+        GenerateStorageKey(addr, TYPE_INDICATOR, {query.name()});
+    FetchStateDataForKey(t_type, type_key, true);
+    if (t_type.empty()) {
+      LOG_GENERAL(WARNING, "Failed to fetch type for addr: "
+                               << addr.hex() << " vname: " << query.name());
+      return false;
+    }
+    type = DataConversion::CharArrayToString(t_type[type_key]);
   }
 
   string key = addr.hex() + SCILLA_INDEX_SEPARATOR + query.name() +
@@ -378,6 +394,44 @@ bool ContractStorage2::FetchStateValue(const dev::h160& addr, const bytes& src,
   return SerializeToArray(value, dst, 0);
 }
 
+bool ContractStorage2::FetchExternalStateValue(
+    const dev::h160& caller, const dev::h160& target, const bytes& src,
+    unsigned int s_offset, bytes& dst, unsigned int d_offset, bool& foundVal,
+    string& type, uint32_t caller_version) {
+  // get caller version if not available
+  if (caller_version == std::numeric_limits<uint32_t>::max()) {
+    std::map<std::string, bytes> t_caller_version;
+    string version_key =
+        GenerateStorageKey(caller, SCILLA_VERSION_INDICATOR, {});
+    FetchStateDataForKey(t_caller_version, version_key, true);
+    if (t_caller_version.empty()) {
+      return false;
+    }
+    caller_version = std::stoul(
+        DataConversion::CharArrayToString(t_caller_version[version_key]));
+  }
+
+  // get target version if not available
+  std::map<std::string, bytes> t_target_version;
+  string version_key = GenerateStorageKey(target, SCILLA_VERSION_INDICATOR, {});
+  FetchStateDataForKey(t_target_version, version_key, true);
+  if (t_target_version.empty()) {
+    return false;
+  }
+  uint32_t target_version = std::stoul(
+      DataConversion::CharArrayToString(t_target_version[version_key]));
+
+  if (target_version != caller_version) {
+    LOG_GENERAL(WARNING, "Caller(" << caller_version << ") target("
+                                   << target_version << ") version mismatch");
+    return false;
+  }
+
+  // get value
+  return FetchStateValue(target, src, s_offset, dst, d_offset, foundVal, true,
+                         type);
+}
+
 void ContractStorage2::DeleteByPrefix(const string& prefix) {
   auto p = t_stateDataMap.lower_bound(prefix);
   while (p != t_stateDataMap.end() &&
@@ -419,35 +473,6 @@ void ContractStorage2::DeleteByIndex(const string& index) {
     p_indexToBeDeleted.emplace(index, true);  // for reverting
     t_indexToBeDeleted.emplace(index);
   }
-}
-
-bool ContractStorage2::FetchContractFieldsMapDepth(const dev::h160& address,
-                                                   Json::Value& map_depth_json,
-                                                   bool temp) {
-  std::map<std::string, bytes> map_depth_data_in_map;
-  string map_depth_data;
-  FetchStateDataForContract(map_depth_data_in_map, address,
-                            FIELDS_MAP_DEPTH_INDICATOR, {}, temp);
-
-  /// check the data obtained from storage
-  if (map_depth_data_in_map.size() == 1 &&
-      map_depth_data_in_map.find(
-          address.hex() + SCILLA_INDEX_SEPARATOR + FIELDS_MAP_DEPTH_INDICATOR +
-          SCILLA_INDEX_SEPARATOR) != map_depth_data_in_map.end()) {
-    map_depth_data = DataConversion::CharArrayToString(map_depth_data_in_map.at(
-        address.hex() + SCILLA_INDEX_SEPARATOR + FIELDS_MAP_DEPTH_INDICATOR +
-        SCILLA_INDEX_SEPARATOR));
-  } else {
-    LOG_GENERAL(WARNING, "Cannot find FIELDS_MAP_DEPTH_INDICATOR");
-    return false;
-  }
-
-  if (!map_depth_data.empty() && !JSONUtils::GetInstance().convertStrtoJson(
-                                     map_depth_data, map_depth_json)) {
-    LOG_GENERAL(WARNING, "Cannot parse " << map_depth_data << " to JSON");
-    return false;
-  }
-  return true;
 }
 
 void UnquoteString(string& input) {
@@ -505,13 +530,6 @@ bool ContractStorage2::FetchStateJsonForContract(Json::Value& _json,
   std::map<std::string, bytes> states;
   FetchStateDataForContract(states, address, vname, indices, temp);
 
-  /// get the map depth
-  Json::Value map_depth_json;
-  if (!FetchContractFieldsMapDepth(address, map_depth_json, temp)) {
-    LOG_GENERAL(WARNING, "FetchContractFieldsMapDepth failed for contract: "
-                             << address.hex());
-  }
-
   for (const auto& state : states) {
     vector<string> fragments;
     boost::split(fragments, state.first,
@@ -525,7 +543,8 @@ bool ContractStorage2::FetchStateJsonForContract(Json::Value& _json,
     string vname = fragments.at(1);
 
     if (vname == FIELDS_MAP_DEPTH_INDICATOR ||
-        vname == CONTRACT_ADDR_INDICATOR) {
+        vname == CONTRACT_ADDR_INDICATOR || vname == SCILLA_VERSION_INDICATOR ||
+        vname == MAP_DEPTH_INDICATOR || vname == TYPE_INDICATOR) {
       continue;
     }
 
@@ -576,9 +595,15 @@ bool ContractStorage2::FetchStateJsonForContract(Json::Value& _json,
       }
     };
 
+    map<string, bytes> map_depth;
+    string map_depth_key =
+        GenerateStorageKey(address, MAP_DEPTH_INDICATOR, {vname});
+    FetchStateDataForKey(map_depth, map_depth_key, temp);
+
     jsonMapWrapper(_json[vname], map_indices, state.second, 0,
-                   (!map_depth_json.empty() && map_depth_json.isMember(vname))
-                       ? map_depth_json[vname].asInt()
+                   !map_depth.empty()
+                       ? std::stoi(DataConversion::CharArrayToString(
+                             map_depth[map_depth_key]))
                        : -1);
   }
 
@@ -806,7 +831,9 @@ bool ContractStorage2::UpdateStateValue(const dev::h160& addr, const bytes& q,
   }
 
   if (query.name() == FIELDS_MAP_DEPTH_INDICATOR ||
-      query.name() == CONTRACT_ADDR_INDICATOR) {
+      query.name() == CONTRACT_ADDR_INDICATOR ||
+      query.name() == SCILLA_VERSION_INDICATOR ||
+      query.name() == MAP_DEPTH_INDICATOR || query.name() == TYPE_INDICATOR) {
     LOG_GENERAL(WARNING, "invalid query: " << query.name());
     return false;
   }
@@ -957,7 +984,7 @@ void ContractStorage2::UpdateStateDatasAndToDeletes(
   }
 
   if (updateRoot) {
-    stateHash = UpdateContractTrie(addr, stateHash, temp, revertible);
+    stateHash = UpdateContractStateHash(addr, stateHash, temp, revertible);
   }
 }
 
@@ -1103,10 +1130,64 @@ void ContractStorage2::InitTempState(bool callFromExternal) {
   }
 }
 
-dev::h256 ContractStorage2::UpdateContractTrieCore(
-    const dev::h256& root, const std::map<std::string, bytes>& states,
-    const std::vector<std::string>& toDeletedIndices, bool temp,
+bool ContractStorage2::FetchWhetherContractHasMap(const dev::h160& addr,
+                                                  bool temp) {
+  std::map<std::string, bytes> have_map_in_map;
+  FetchStateDataForContract(have_map_in_map, addr, DOES_CONTRACT_HAVE_MAP, {},
+                            temp);
+
+  std::string have_map_key =
+      GenerateStorageKey(addr, DOES_CONTRACT_HAVE_MAP, {});
+
+  std::string have_map;
+  /// check the data obtained from storage
+  if (have_map_in_map.size() == 1 &&
+      have_map_in_map.find(have_map_key) != have_map_in_map.end()) {
+    have_map =
+        DataConversion::CharArrayToString(have_map_in_map.at(have_map_key));
+  } else {
+    LOG_GENERAL(WARNING,
+                "Cannot find DOES_CONTRACT_HAVE_MAP, set to false by default");
+    return false;
+  }
+
+  return have_map == CONTRACT_HAVE_MAP;
+}
+
+dev::h256 ContractStorage2::UpdateContractStateHashCore(
+    const dev::h160& addr, const dev::h256& stateHash, bool temp,
     bool revertible) {
+  if (FetchWhetherContractHasMap(addr, temp)) {
+    return UpdateContractTrie(addr, stateHash, temp, revertible);
+  } else {
+    return HashContractState(addr, temp);
+  }
+}
+
+dev::h256 ContractStorage2::UpdateContractStateHash(const dev::h160& addr,
+                                                    const dev::h256& stateHash,
+                                                    bool temp, bool revertible,
+                                                    bool fromExternal) {
+  if (IsNullAddress(addr)) {
+    LOG_GENERAL(WARNING, "Null address rejected");
+    return dev::h256();
+  }
+
+  if (fromExternal) {
+    lock_guard<mutex> g(m_stateDataMutex);
+    return UpdateContractStateHashCore(addr, stateHash, temp, revertible);
+  } else {
+    return UpdateContractStateHashCore(addr, stateHash, temp, revertible);
+  }
+}
+
+dev::h256 ContractStorage2::UpdateContractTrie(const dev::h160& addr,
+                                               const dev::h256& root, bool temp,
+                                               bool revertible) {
+  std::map<std::string, bytes> states;
+  std::vector<std::string> toDeletedIndices;
+  FetchUpdatedStateValuesForAddress(addr, states, toDeletedIndices, temp);
+
   if (temp) {
     if (root == dev::h256()) {
       m_tempTrie.init();
@@ -1121,7 +1202,8 @@ dev::h256 ContractStorage2::UpdateContractTrieCore(
     }
 
     for (const auto& index : toDeletedIndices) {
-      bytes b_index = DataConversion::StringToCharArray(RemoveAddrFromKey(index));
+      bytes b_index =
+          DataConversion::StringToCharArray(RemoveAddrFromKey(index));
       if (m_tempTrie.contains(b_index)) {
         m_tempTrie.remove(b_index);
       }
@@ -1146,7 +1228,8 @@ dev::h256 ContractStorage2::UpdateContractTrieCore(
     }
 
     for (const auto& index : toDeletedIndices) {
-      bytes b_index = DataConversion::StringToCharArray(RemoveAddrFromKey(index));
+      bytes b_index =
+          DataConversion::StringToCharArray(RemoveAddrFromKey(index));
       if (m_permTrie.contains(b_index)) {
         m_permTrie.remove(b_index);
       }
@@ -1160,31 +1243,22 @@ dev::h256 ContractStorage2::UpdateContractTrieCore(
   }
 }
 
-dev::h256 ContractStorage2::UpdateContractTrie(const dev::h160& addr,
-                                               const dev::h256& root, bool temp,
-                                               bool revertible,
-                                               bool fromExternal) {
-  if (LOG_SC) {
-    LOG_MARKER();
-  }
-
-  if (IsNullAddress(addr)) {
-    LOG_GENERAL(WARNING, "Null address rejected");
-    return dev::h256();
-  }
-
+dev::h256 ContractStorage2::HashContractState(const dev::h160& addr,
+                                              bool temp) {
   std::map<std::string, bytes> states;
-  std::vector<std::string> toDeletedIndices;
-  FetchUpdatedStateValuesForAddress(addr, states, toDeletedIndices, temp);
+  FetchStateDataForContract(states, addr, "", {}, temp);
 
-  if (fromExternal) {
-    lock_guard<mutex> g(m_stateDataMutex);
-    return UpdateContractTrieCore(root, states, toDeletedIndices, temp,
-                                  revertible);
-  } else {
-    return UpdateContractTrieCore(root, states, toDeletedIndices, temp,
-                                  revertible);
+  // iterate the raw protobuf string and hash
+  SHA2<HashType::HASH_VARIANT_256> sha2;
+  for (const auto& state : states) {
+    sha2.Update(DataConversion::StringToCharArray(state.first));
+    if (!state.second.empty()) {
+      sha2.Update(state.second);
+    }
   }
+  // return dev::h256(sha2.Finalize());
+  dev::h256 ret(sha2.Finalize());
+  return ret;
 }
 
 void ContractStorage2::Reset() {

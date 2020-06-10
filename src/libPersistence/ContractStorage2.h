@@ -50,6 +50,8 @@ using TempOverlayMap = OverlayMap<std::shared_ptr<DefaultAddDeleteMap>,
                                   std::shared_ptr<RevertableAddDeleteMap>,
                                   std::shared_ptr<LevelDBMap>>;
 
+static std::string type_placeholder;
+
 enum TERM { TEMPORARY, SHORTTERM, LONGTERM };
 
 Index GetIndex(const dev::h160& address, const std::string& key);
@@ -106,10 +108,19 @@ class ContractStorage2 : public Singleton<ContractStorage2> {
 
   bool CleanEmptyMapPlaceholders(const std::string& key);
 
-  dev::h256 UpdateContractTrieCore(
-      const dev::h256& root, const std::map<std::string, bytes>& states,
-      const std::vector<std::string>& toDeletedIndices, bool temp,
-      bool revertible);
+  bool FetchWhetherContractHasMap(const dev::h160& addr, bool temp);
+
+  /// Update the contract state trie and return the root hash
+  dev::h256 UpdateContractTrie(const dev::h160& addr, const dev::h256& root,
+                               bool temp, bool revertible);
+
+  /// Get the contract state hash by hashing the raw state
+  dev::h256 HashContractState(const dev::h160& addr, bool temp);
+
+  /// Get the state hash of a contract account without mutex
+  dev::h256 UpdateContractStateHashCore(const dev::h160& addr,
+                                        const dev::h256& root, bool temp,
+                                        bool revertible);
 
   void InitTempStateCore();
 
@@ -156,10 +167,14 @@ class ContractStorage2 : public Singleton<ContractStorage2> {
 
   bool FetchStateValue(const dev::h160& addr, const bytes& src,
                        unsigned int s_offset, bytes& dst, unsigned int d_offset,
-                       bool& foundVal);
+                       bool& foundVal, bool getType = false,
+                       std::string& type = type_placeholder);
 
-  bool FetchContractFieldsMapDepth(const dev::h160& address,
-                                   Json::Value& map_depth_json, bool temp);
+  bool FetchExternalStateValue(
+      const dev::h160& caller, const dev::h160& target, const bytes& src,
+      unsigned int s_offset, bytes& dst, unsigned int d_offset, bool& foundVal,
+      std::string& type,
+      uint32_t caller_version = std::numeric_limits<uint32_t>::max());
 
   void InsertValueToStateJson(Json::Value& _json, std::string key,
                               std::string value, bool unquote = true,
@@ -205,9 +220,10 @@ class ContractStorage2 : public Singleton<ContractStorage2> {
   void InitTempState(bool callFromExternal = false);
 
   /// Get the state hash of a contract account
-  dev::h256 UpdateContractTrie(const dev::h160& addr, const dev::h256& root,
-                               bool temp, bool revertible = false,
-                               bool fromExternal = false);
+  dev::h256 UpdateContractStateHash(const dev::h160& addr,
+                                    const dev::h256& root, bool temp,
+                                    bool revertible = false,
+                                    bool fromExternal = false);
 
   /// Clean the databases
   void Reset();

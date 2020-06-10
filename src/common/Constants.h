@@ -118,6 +118,10 @@ const std::string DS_BACKUP_MSG = "DS BACKUP NOW";
 
 const std::string dsNodeFile = "dsnodes.xml";
 
+const std::string DOES_CONTRACT_HAVE_MAP = "has_map";
+const std::string CONTRACT_HAVE_MAP = "1";
+const std::string CONTRACT_NO_MAP = "0";
+
 const char SCILLA_INDEX_SEPARATOR = 0x16;
 
 const float ONE_HUNDRED_PERCENT = 100.f;
@@ -358,6 +362,9 @@ extern const std::string LIBRARY_CODE_EXTENSION;
 extern const std::string EXTLIB_FOLDER;
 extern const bool ENABLE_SCILLA_MULTI_VERSION;
 extern const std::string FIELDS_MAP_DEPTH_INDICATOR;
+extern const std::string MAP_DEPTH_INDICATOR;
+extern const std::string SCILLA_VERSION_INDICATOR;
+extern const std::string TYPE_INDICATOR;
 extern const bool LOG_SC;
 extern const bool DISABLE_SCILLA_LIB;
 

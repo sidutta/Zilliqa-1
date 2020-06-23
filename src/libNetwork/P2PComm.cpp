@@ -979,6 +979,13 @@ void P2PComm::InitializeRumorManager(
   }
 }
 
+void P2PComm::UpdatePeerInfoInRumorManager(const Peer& peer,
+                                           const PubKey& pubKey) {
+  LOG_MARKER();
+
+  m_rumorManager.UpdatePeerInfo(peer, pubKey);
+}
+
 Signature P2PComm::SignMessage(const bytes& message) {
   // LOG_MARKER();
 

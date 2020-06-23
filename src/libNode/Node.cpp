@@ -931,6 +931,7 @@ bool Node::StartRetrieveHistory(const SyncType syncType,
   }
 
   bool bInShardStructure = false;
+  bool bIpChanged = false;
 
   if (bDS) {
     m_myshardId = m_mediator.m_ds->m_shards.size();
@@ -943,6 +944,10 @@ bool Node::StartRetrieveHistory(const SyncType syncType,
           LOG_GENERAL(
               INFO, "This node belongs to sharding structure #" << m_myshardId);
           bInShardStructure = true;
+          if (get<SHARD_NODE_PEER>(shardNode).m_ipAddress !=
+              m_mediator.m_selfPeer.m_ipAddress) {
+            bIpChanged = true;
+          }
           break;
         }
       }
@@ -958,12 +963,19 @@ bool Node::StartRetrieveHistory(const SyncType syncType,
         m_mediator.m_ds->m_mapNodeReputation);
   }
 
-  if (REJOIN_NODE_NOT_IN_NETWORK && !LOOKUP_NODE_MODE && !bDS &&
-      !bInShardStructure) {
-    LOG_GENERAL(WARNING,
-                "Node " << m_mediator.m_selfKey.second
-                        << " is not in network, apply re-join process instead");
-    return false;
+  if (REJOIN_NODE_NOT_IN_NETWORK && !LOOKUP_NODE_MODE && !bDS) {
+    if (!bInShardStructure) {
+      LOG_GENERAL(
+          WARNING,
+          "Node " << m_mediator.m_selfKey.second
+                  << " is not in network, apply re-join process instead");
+      return false;
+    } else if (bIpChanged) {
+      LOG_GENERAL(
+          INFO,
+          "My IP has been changed. So will broadcast my new IP to network");
+      UpdateShardGuardIdentity();
+    }
   }
 
   m_mediator.m_consensusID =
@@ -2382,6 +2394,198 @@ bool Node::ProcessDoRejoin(const bytes& message, unsigned int offset,
     default:
       return false;
   }
+  return true;
+}
+
+// This feature is only available to shard guard node. This allows guard node to
+// change it's network information (IP and/or port).
+// Pre-condition: Must still have access to existing public and private keypair
+bool Node::UpdateShardGuardIdentity() {
+  if (!GUARD_MODE) {
+    LOG_GENERAL(
+        WARNING,
+        "Not in guard mode. Unable to update shard guard network info.");
+    return false;
+  }
+
+  if (!Guard::GetInstance().IsNodeInDSGuardList(m_mediator.m_selfKey.second)) {
+    LOG_GENERAL(WARNING,
+                "Current node is not a shard guard node. Unable to update "
+                "network info.");
+    return false;
+  }
+
+  // To provide current pubkey, new IP, new Port and current timestamp
+  bytes updateshardguardidentitymessage = {
+      MessageType::NODE, NodeInstructionType::NEWSHARDGUARDIDENTITY};
+
+  uint64_t curDSEpochNo =
+      m_mediator.m_dsBlockChain.GetLastBlock().GetHeader().GetBlockNum() + 1;
+
+  if (!Messenger::SetNodeNewShardGuardNetworkInfo(
+          updateshardguardidentitymessage, MessageOffset::BODY, curDSEpochNo,
+          m_mediator.m_selfPeer, get_time_as_int(), m_mediator.m_selfKey)) {
+    LOG_EPOCH(WARNING, m_mediator.m_currentEpochNum,
+              "Messenger::SetNodeSetNewDSGuardNetworkInfo failed.");
+    return false;
+  }
+
+  // Send to all lookups
+  m_mediator.m_lookup->SendMessageToLookupNodesSerial(
+      updateshardguardidentitymessage);
+
+  // Send to all upper seed nodes
+  m_mediator.m_lookup->SendMessageToSeedNodes(updateshardguardidentitymessage);
+
+  vector<Peer> peerInfo;
+  {
+    // Multicast to all my shard peers
+    lock_guard<mutex> g(m_mutexShardMember);
+    for (auto& it : *m_myShardMembers) {
+      peerInfo.push_back(it.second);
+    }
+  }
+
+  {
+    // Multicast to all DS committee
+    lock_guard<mutex> lock(m_mediator.m_mutexDSCommittee);
+    for (auto const& i : *m_mediator.m_DSCommittee) {
+      if (i.second.m_listenPortHost != 0) {
+        peerInfo.push_back(i.second);
+      }
+    }
+  }
+
+  P2PComm::GetInstance().SendMessage(peerInfo, updateshardguardidentitymessage);
+
+  return true;
+}
+
+bool Node::ProcessNewShardGuardNetworkInfo(const bytes& message,
+                                           unsigned int offset,
+                                           const Peer& from) {
+  LOG_MARKER();
+
+  if (!GUARD_MODE) {
+    LOG_GENERAL(
+        WARNING,
+        "Not in guard mode. Unable to update shard guard network info.");
+    return false;
+  }
+
+  uint64_t dsEpochNumber;
+  Peer shardGuardNewNetworkInfo;
+  uint64_t timestamp;
+  PubKey shardGuardPubkey;
+
+  if (!Messenger::GetNodeNewShardGuardNetworkInfo(
+          message, offset, dsEpochNumber, shardGuardNewNetworkInfo, timestamp,
+          shardGuardPubkey)) {
+    LOG_EPOCH(WARNING, m_mediator.m_currentEpochNum,
+              "Messenger::GetNodeNewShardGuardNetworkInfo failed.");
+    return false;
+  }
+
+  if (from.GetIpAddress() != shardGuardNewNetworkInfo.GetIpAddress()) {
+    LOG_CHECK_FAIL("IP Address",
+                   shardGuardNewNetworkInfo.GetPrintableIPAddress(),
+                   from.GetPrintableIPAddress());
+    return false;
+  }
+
+  if (m_mediator.m_selfKey.second == shardGuardPubkey) {
+    LOG_GENERAL(INFO,
+                "[update shard guard] Node to be updated is current node. No "
+                "update needed.");
+    return false;
+  }
+
+  uint64_t currentDSEpochNumber =
+      m_mediator.m_dsBlockChain.GetLastBlock().GetHeader().GetBlockNum() + 1;
+
+  if (dsEpochNumber != currentDSEpochNumber) {
+    LOG_GENERAL(
+        WARNING,
+        "Update of shard guard network info failure  - dsepoch in message: "
+            << dsEpochNumber
+            << " does not match current dsepoch: " << currentDSEpochNumber);
+    return false;
+  }
+
+  if (!Guard::GetInstance().IsNodeInShardGuardList(shardGuardPubkey)) {
+    LOG_GENERAL(WARNING,
+                "Update of shard guard requested by non-shard guard node, So "
+                "ignore the request");
+    return false;
+  }
+
+  // I am sharded node and requestor is also from my shard
+  if (IsShardNode(m_mediator.m_selfKey.second)) {
+    if (!IsShardNode(shardGuardPubkey)) {
+      LOG_GENERAL(WARNING, "PubKey of sender "
+                               << from
+                               << " does not match any of my shard members");
+      return false;
+    }
+    // update requestor's ( ShardGuard ) new IP
+    lock_guard<mutex> g(m_mutexShardMember);
+
+    unsigned int indexOfShardNode;
+    for (indexOfShardNode = 0;
+         indexOfShardNode < Guard::GetInstance().GetNumOfShardGuard();
+         indexOfShardNode++) {
+      if (m_myShardMembers->at(indexOfShardNode).first == shardGuardPubkey) {
+        LOG_GENERAL(
+            INFO, "[update shard guard] shard guard to be updated is at index "
+                      << indexOfShardNode << " "
+                      << m_myShardMembers->at(indexOfShardNode).second << " -> "
+                      << shardGuardNewNetworkInfo);
+        m_myShardMembers->at(indexOfShardNode).second =
+            shardGuardNewNetworkInfo;
+        // Update peer info for gossip
+        P2PComm::GetInstance().UpdatePeerInfoInRumorManager(
+            shardGuardNewNetworkInfo, shardGuardPubkey);
+
+        // Put the sharding structure to disk
+        if (!BlockStorage::GetBlockStorage().PutShardStructure(
+                m_mediator.m_ds->m_shards, m_mediator.m_node->m_myshardId)) {
+          LOG_GENERAL(WARNING, "BlockStorage::PutShardStructure failed");
+        }
+        break;
+      }
+    }
+  }
+  // I am ds node and requestor is from one of shards
+  else if (m_mediator.m_ds->m_mode != DirectoryService::IDLE) {
+    if (!m_mediator.m_ds->CheckIfShardNode(shardGuardPubkey)) {
+      LOG_GENERAL(WARNING, "PubKey of sender "
+                               << from
+                               << " does not match any of the shard members");
+      return false;
+    }
+
+    m_mediator.m_ds->UpdateShardNodeNetworkInfo(shardGuardNewNetworkInfo,
+                                                shardGuardPubkey);
+    // Update peer info for gossip
+    P2PComm::GetInstance().UpdatePeerInfoInRumorManager(
+        shardGuardNewNetworkInfo, shardGuardPubkey);
+
+    // Put the sharding structure to disk
+    if (!BlockStorage::GetBlockStorage().PutShardStructure(
+            m_mediator.m_ds->m_shards, m_mediator.m_node->m_myshardId)) {
+      LOG_GENERAL(WARNING, "BlockStorage::PutShardStructure failed");
+    }
+  }
+  // I am lookup node
+  else if (LOOKUP_NODE_MODE) {
+    m_mediator.m_ds->UpdateShardNodeNetworkInfo(shardGuardNewNetworkInfo,
+                                                shardGuardPubkey);
+    if (!BlockStorage::GetBlockStorage().PutShardStructure(
+            m_mediator.m_ds->m_shards, 0)) {
+      LOG_GENERAL(WARNING, "BlockStorage::PutShardStructure failed");
+    }
+  }
+
   return true;
 }
 

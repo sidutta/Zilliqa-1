@@ -723,6 +723,11 @@ class Node : public Executable {
 
   void CleanLocalRawStores();
 
+  bool UpdateShardGuardIdentity();
+
+  bool ProcessNewShardGuardNetworkInfo(const bytes& message,
+                                       unsigned int offset, const Peer& from);
+
  private:
   static std::map<NodeState, std::string> NodeStateStrings;
 

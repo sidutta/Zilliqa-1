@@ -19,6 +19,7 @@
 #define ZILLIQA_SRC_LIBNETWORK_RUMORMANAGER_H_
 
 #include <boost/bimap.hpp>
+#include <boost/bimap/support/lambda.hpp>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -122,6 +123,8 @@ class RumorManager {
       const RawBytes& message, const RRS::Message::Type& t, const Peer& from);
 
   void AppendKeyAndSignature(RawBytes& result, const RawBytes& messageToSig);
+
+  void UpdatePeerInfo(const Peer& peer, const PubKey& pubKey);
   // CONST METHODS
   const RumorIdRumorBimap& rumors() const;
 };

@@ -723,6 +723,8 @@ class Node : public Executable {
 
   void CleanLocalRawStores();
 
+  void WaitForNextTwoBlocksBeforeRejoin();
+
   bool UpdateShardGuardIdentity();
 
   bool ProcessNewShardGuardNetworkInfo(const bytes& message,

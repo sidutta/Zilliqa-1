@@ -629,6 +629,32 @@ void Node::Prepare(bool runInitializeGenesisBlocks) {
       FULL_DATASET_MINE);
 }
 
+void Node::WaitForNextTwoBlocksBeforeRejoin() {
+  // wait until next two txblocks are mined to give lookup enough time to
+  // upload incr data to S3.
+  unique_lock<mutex> lock(m_mediator.m_lookup->m_MutexCVSetTxBlockFromSeed);
+  m_mediator.m_lookup->SetSyncType(SyncType::RECOVERY_ALL_SYNC);
+
+  uint64_t oldBlkCount = m_mediator.m_txBlockChain.GetBlockCount();
+  LOG_GENERAL(INFO, "Wait until next two txblock are recvd from lookup..");
+  while (true) {
+    do {
+      m_mediator.m_lookup->GetTxBlockFromSeedNodes(
+          m_mediator.m_txBlockChain.GetBlockCount(), 0);
+    } while (m_mediator.m_lookup->cv_setTxBlockFromSeed.wait_for(
+                 lock, chrono::seconds(RECOVERY_SYNC_TIMEOUT)) ==
+             cv_status::timeout);
+
+    if (m_mediator.m_txBlockChain.GetBlockCount() > oldBlkCount + 1) {
+      LOG_GENERAL(INFO, "Received next two txblocks. Ok to rejoin now!")
+      break;
+    }
+    this_thread::sleep_for(chrono::seconds(RECOVERY_SYNC_TIMEOUT));
+  }
+
+  m_mediator.m_lookup->SetSyncType(SyncType::NO_SYNC);
+}
+
 bool Node::StartRetrieveHistory(const SyncType syncType,
                                 bool rejoiningAfterRecover) {
   LOG_MARKER();
@@ -969,35 +995,16 @@ bool Node::StartRetrieveHistory(const SyncType syncType,
           WARNING,
           "Node " << m_mediator.m_selfKey.second
                   << " is not in network, apply re-join process instead");
-      // wait until next two txblocks are mined to give lookup enough time to
-      // upload incr data to S3.
-      unique_lock<mutex> lock(m_mediator.m_lookup->m_MutexCVSetTxBlockFromSeed);
-      m_mediator.m_lookup->SetSyncType(SyncType::RECOVERY_ALL_SYNC);
-
-      uint64_t oldBlkCount = m_mediator.m_txBlockChain.GetBlockCount();
-      LOG_GENERAL(INFO, "Wait until next two txblock are recvd from lookup..");
-      while (true) {
-        do {
-          m_mediator.m_lookup->GetTxBlockFromSeedNodes(
-              m_mediator.m_txBlockChain.GetBlockCount(), 0);
-        } while (m_mediator.m_lookup->cv_setTxBlockFromSeed.wait_for(
-                     lock, chrono::seconds(RECOVERY_SYNC_TIMEOUT)) ==
-                 cv_status::timeout);
-
-        if (m_mediator.m_txBlockChain.GetBlockCount() > oldBlkCount + 1) {
-          LOG_GENERAL(INFO, "Received next two txblocks. Ok to rejoin now!")
-          break;
-        }
-        this_thread::sleep_for(chrono::seconds(RECOVERY_SYNC_TIMEOUT));
-      }
-
-      m_mediator.m_lookup->SetSyncType(SyncType::NO_SYNC);
+      WaitForNextTwoBlocksBeforeRejoin();
       return false;
     } else if (bIpChanged) {
       LOG_GENERAL(
           INFO,
           "My IP has been changed. So will broadcast my new IP to network");
-      UpdateShardGuardIdentity();
+      if (!UpdateShardGuardIdentity()) {
+        WaitForNextTwoBlocksBeforeRejoin();
+        return false;
+      }
     }
   }
 
@@ -2431,7 +2438,8 @@ bool Node::UpdateShardGuardIdentity() {
     return false;
   }
 
-  if (!Guard::GetInstance().IsNodeInDSGuardList(m_mediator.m_selfKey.second)) {
+  if (!Guard::GetInstance().IsNodeInShardGuardList(
+          m_mediator.m_selfKey.second)) {
     LOG_GENERAL(WARNING,
                 "Current node is not a shard guard node. Unable to update "
                 "network info.");

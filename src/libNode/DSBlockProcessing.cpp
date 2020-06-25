@@ -319,7 +319,7 @@ void Node::StartFirstTxEpoch() {
 
   m_justDidFallback = false;
 
-  if (BROADCAST_GOSSIP_MODE) {
+  if (BROADCAST_GOSSIP_MODE && !LOOKUP_NODE_MODE) {
     VectorOfNode peers;
     std::vector<PubKey> pubKeys;
     GetEntireNetworkPeerInfo(peers, pubKeys);

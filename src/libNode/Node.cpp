@@ -2549,9 +2549,17 @@ bool Node::ProcessNewShardGuardNetworkInfo(const bytes& message,
                 "ignore the request");
     return false;
   }
-
+  // I am lookup node
+  if (LOOKUP_NODE_MODE) {
+    m_mediator.m_ds->UpdateShardNodeNetworkInfo(shardGuardNewNetworkInfo,
+                                                shardGuardPubkey);
+    if (!BlockStorage::GetBlockStorage().PutShardStructure(
+            m_mediator.m_ds->m_shards, 0)) {
+      LOG_GENERAL(WARNING, "BlockStorage::PutShardStructure failed");
+    }
+  }
   // I am sharded node and requestor is also from my shard
-  if (IsShardNode(m_mediator.m_selfKey.second)) {
+  else if (IsShardNode(m_mediator.m_selfKey.second)) {
     if (!IsShardNode(shardGuardPubkey)) {
       LOG_GENERAL(WARNING, "PubKey of sender "
                                << from
@@ -2573,9 +2581,11 @@ bool Node::ProcessNewShardGuardNetworkInfo(const bytes& message,
                       << shardGuardNewNetworkInfo);
         m_myShardMembers->at(indexOfShardNode).second =
             shardGuardNewNetworkInfo;
-        // Update peer info for gossip
-        P2PComm::GetInstance().UpdatePeerInfoInRumorManager(
-            shardGuardNewNetworkInfo, shardGuardPubkey);
+        if (BROADCAST_GOSSIP_MODE) {
+          // Update peer info for gossip
+          P2PComm::GetInstance().UpdatePeerInfoInRumorManager(
+              shardGuardNewNetworkInfo, shardGuardPubkey);
+        }
 
         // Put the sharding structure to disk
         if (!BlockStorage::GetBlockStorage().PutShardStructure(
@@ -2597,22 +2607,15 @@ bool Node::ProcessNewShardGuardNetworkInfo(const bytes& message,
 
     m_mediator.m_ds->UpdateShardNodeNetworkInfo(shardGuardNewNetworkInfo,
                                                 shardGuardPubkey);
-    // Update peer info for gossip
-    P2PComm::GetInstance().UpdatePeerInfoInRumorManager(
-        shardGuardNewNetworkInfo, shardGuardPubkey);
+    if (BROADCAST_GOSSIP_MODE) {
+      // Update peer info for gossip
+      P2PComm::GetInstance().UpdatePeerInfoInRumorManager(
+          shardGuardNewNetworkInfo, shardGuardPubkey);
+    }
 
     // Put the sharding structure to disk
     if (!BlockStorage::GetBlockStorage().PutShardStructure(
             m_mediator.m_ds->m_shards, m_mediator.m_node->m_myshardId)) {
-      LOG_GENERAL(WARNING, "BlockStorage::PutShardStructure failed");
-    }
-  }
-  // I am lookup node
-  else if (LOOKUP_NODE_MODE) {
-    m_mediator.m_ds->UpdateShardNodeNetworkInfo(shardGuardNewNetworkInfo,
-                                                shardGuardPubkey);
-    if (!BlockStorage::GetBlockStorage().PutShardStructure(
-            m_mediator.m_ds->m_shards, 0)) {
       LOG_GENERAL(WARNING, "BlockStorage::PutShardStructure failed");
     }
   }

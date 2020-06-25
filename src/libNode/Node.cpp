@@ -2907,7 +2907,8 @@ bool Node::Execute(const bytes& message, unsigned int offset,
                                        &Node::ProcessDSGuardNetworkInfoUpdate,
                                        &Node::ProcessRemoveNodeFromBlacklist,
                                        &Node::ProcessPendingTxn,
-                                       &Node::ProcessVCFinalBlock};
+                                       &Node::ProcessVCFinalBlock,
+                                       &Node::ProcessNewShardGuardNetworkInfo};
 
   const unsigned char ins_byte = message.at(offset);
   const unsigned int ins_handlers_count =

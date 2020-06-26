@@ -2559,7 +2559,7 @@ bool Node::ProcessNewShardGuardNetworkInfo(const bytes& message,
     }
   }
   // I am sharded node and requestor is also from my shard
-  else if (IsShardNode(m_mediator.m_selfKey.second)) {
+  else if (m_mediator.m_ds->m_mode == DirectoryService::IDLE) {
     if (!IsShardNode(shardGuardPubkey)) {
       LOG_GENERAL(WARNING, "PubKey of sender "
                                << from

@@ -2432,7 +2432,7 @@ bool Node::ProcessDoRejoin(const bytes& message, unsigned int offset,
 // Pre-condition: Must still have access to existing public and private keypair
 bool Node::UpdateShardGuardIdentity() {
   LOG_MARKER();
-  
+
   if (!GUARD_MODE) {
     LOG_GENERAL(
         WARNING,
@@ -2609,11 +2609,6 @@ bool Node::ProcessNewShardGuardNetworkInfo(const bytes& message,
 
     m_mediator.m_ds->UpdateShardNodeNetworkInfo(shardGuardNewNetworkInfo,
                                                 shardGuardPubkey);
-    if (BROADCAST_GOSSIP_MODE) {
-      // Update peer info for gossip
-      P2PComm::GetInstance().UpdatePeerInfoInRumorManager(
-          shardGuardNewNetworkInfo, shardGuardPubkey);
-    }
 
     // Put the sharding structure to disk
     if (!BlockStorage::GetBlockStorage().PutShardStructure(

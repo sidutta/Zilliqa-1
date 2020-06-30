@@ -2431,6 +2431,8 @@ bool Node::ProcessDoRejoin(const bytes& message, unsigned int offset,
 // change it's network information (IP and/or port).
 // Pre-condition: Must still have access to existing public and private keypair
 bool Node::UpdateShardGuardIdentity() {
+  LOG_MARKER();
+  
   if (!GUARD_MODE) {
     LOG_GENERAL(
         WARNING,

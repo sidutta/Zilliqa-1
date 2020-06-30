@@ -178,14 +178,17 @@ bool RumorManager::Initialize(const VectorOfNode& peers, const Peer& myself,
   return true;
 }
 
-void RumorManager::UpdatePeerInfo(const Peer& peer, const PubKey& pubKey) {
+void RumorManager::UpdatePeerInfo(const Peer& newPeerInfo,
+                                  const PubKey& pubKey) {
   std::lock_guard<std::mutex> guard(m_mutex);  // critical section
-  const auto it = m_pubKeyPeerBiMap.left.find(pubKey);
+  auto it = m_pubKeyPeerBiMap.left.find(pubKey);
   if (it != m_pubKeyPeerBiMap.left.end()) {
-    Peer p = it->second;
-    auto it2 = m_peerIdPeerBimap.right.find(p);
+    Peer oldPeerInfo = it->second;
+    m_pubKeyPeerBiMap.left.modify_data(it, boost::bimaps::_data = newPeerInfo);
+    auto it2 = m_peerIdPeerBimap.right.find(oldPeerInfo);
     if (it2 != m_peerIdPeerBimap.right.end()) {
-      m_peerIdPeerBimap.right.modify_key(it2, boost::bimaps::_key = peer);
+      m_peerIdPeerBimap.right.modify_key(it2,
+                                         boost::bimaps::_key = newPeerInfo);
       LOG_GENERAL(INFO, "Updated peer info successfully!");
       return;
     }

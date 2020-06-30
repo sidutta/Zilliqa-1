@@ -124,7 +124,7 @@ class RumorManager {
 
   void AppendKeyAndSignature(RawBytes& result, const RawBytes& messageToSig);
 
-  void UpdatePeerInfo(const Peer& peer, const PubKey& pubKey);
+  void UpdatePeerInfo(const Peer& newPeerInfo, const PubKey& pubKey);
   // CONST METHODS
   const RumorIdRumorBimap& rumors() const;
 };

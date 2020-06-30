@@ -17,6 +17,7 @@
 
 #include "IsolatedServer.h"
 #include "JSONConversion.h"
+#include "libServer/WebsocketServer.h"
 
 using namespace jsonrpc;
 using namespace std;
@@ -312,6 +313,7 @@ Json::Value IsolatedServer::CreateTransaction(const Json::Value& _json) {
     LOG_GENERAL(INFO, "Added Txn " << txHash << " to blocknum: " << m_blocknum);
     ret["TranID"] = txHash.hex();
     ret["Info"] = "Txn processed";
+    WebsocketServer::GetInstance().ParseTxn(twr);
     return ret;
 
   } catch (const JsonRpcException& je) {
@@ -387,6 +389,7 @@ bool IsolatedServer::StartBlocknumIncrement() {
     while (true) {
       this_thread::sleep_for(chrono::milliseconds(m_timeDelta));
       m_blocknum++;
+      WebsocketServer::GetInstance().SendOutMessages();
     }
   };
 

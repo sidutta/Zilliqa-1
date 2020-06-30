@@ -20,6 +20,7 @@
 #include "depends/safeserver/safehttpserver.h"
 #include "libServer/IsolatedServer.h"
 #include "libServer/LookupServer.h"
+#include "libServer/WebsocketServer.h"
 
 #define SUCCESS 0
 #define ERROR_IN_COMMAND_LINE -1
@@ -156,6 +157,14 @@ int main(int argc, const char* argv[]) {
       return ERROR_UNHANDLED_EXCEPTION;
     } else {
       cout << "Server listening on " << port << endl;
+    }
+
+    if (ENABLE_WEBSOCKET && timeDelta > 0) {
+      (void)WebsocketServer::GetInstance();
+    }
+    else if(ENABLE_WEBSOCKET)
+    {
+      LOG_GENERAL(INFO,"Websocket can only be enabled if run in time increment mode");
     }
 
     while (true) {

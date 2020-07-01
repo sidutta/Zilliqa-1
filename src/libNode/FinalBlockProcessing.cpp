@@ -759,7 +759,7 @@ bool Node::ProcessFinalBlockCore(uint64_t& dsBlockNumber,
     // Missed some final block, rejoin
     else if (txBlock.GetHeader().GetBlockNum() > m_mediator.m_currentEpochNum) {
       if (!LOOKUP_NODE_MODE) {
-        if (txBlock.GetHeader().GetBlockNum() - m_mediator.m_currentEpochNum >
+        if (txBlock.GetHeader().GetBlockNum() - m_mediator.m_currentEpochNum <=
             NUM_FINAL_BLOCK_PER_POW) {
           LOG_GENERAL(INFO, "Syncing as normal node from seeds ...");
           m_mediator.m_lookup->SetSyncType(SyncType::NORMAL_SYNC);
